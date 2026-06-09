@@ -27,8 +27,7 @@ fs.readdirSync(commandsDir).forEach((file) => {
 console.log(`[BOT] ${Object.keys(commands).length} comandos carregados: ${Object.keys(commands).join(', ')}`)
 
 /**
- * Desempacota containers de mensagem do WhatsApp:
- * ephemeralMessage, viewOnceMessage, documentWithCaptionMessage, etc.
+ * Desempacota containers de mensagem do WhatsApp
  */
 function unwrapMessage(msg) {
     if (!msg?.message) return msg
@@ -40,7 +39,6 @@ function unwrapMessage(msg) {
         m.viewOnceMessageV2?.message ||
         m.viewOnceMessageV2Extension?.message ||
         m.documentWithCaptionMessage?.message ||
-        m.newsletterAdminInviteMessage ||
         null
 
     if (inner) return { ...msg, message: inner }
@@ -48,67 +46,67 @@ function unwrapMessage(msg) {
 }
 
 /**
- * Extrai o texto da mensagem independente do tipo.
+ * Extrai o texto da mensagem — cobre todos os tipos do WhatsApp
  */
 function extractBody(message) {
     if (!message) return ''
-    return (
-        message.conversation ||
-        message.extendedTextMessage?.text ||
-        message.imageMessage?.caption ||
-        message.videoMessage?.caption ||
-        message.documentMessage?.caption ||
-        message.buttonsResponseMessage?.selectedButtonId ||
-        message.templateButtonReplyMessage?.selectedId ||
-        message.listResponseMessage?.singleSelectReply?.selectedRowId ||
-        message.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
-        ''
-    )
+
+    // Texto puro (mensagem simples)
+    if (message.conversation) return message.conversation
+
+    // Texto com formatação / resposta / link
+    if (message.extendedTextMessage?.text) return message.extendedTextMessage.text
+
+    // Imagem/vídeo com legenda
+    if (message.imageMessage?.caption) return message.imageMessage.caption
+    if (message.videoMessage?.caption) return message.videoMessage.caption
+    if (message.documentMessage?.caption) return message.documentMessage.caption
+
+    // Botões
+    if (message.buttonsResponseMessage?.selectedButtonId) return message.buttonsResponseMessage.selectedButtonId
+    if (message.templateButtonReplyMessage?.selectedId) return message.templateButtonReplyMessage.selectedId
+    if (message.listResponseMessage?.singleSelectReply?.selectedRowId)
+        return message.listResponseMessage.singleSelectReply.selectedRowId
+
+    // Mensagem interativa (interactive flow)
+    if (message.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson)
+        return message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson
+
+    return ''
 }
 
 async function handleMessage(sock, rawMsg) {
-    // DEBUG: loga cada mensagem recebida antes de qualquer filtro
-    const fromDebug = rawMsg?.key?.remoteJid || 'desconhecido'
-    const fromMeDebug = rawMsg?.key?.fromMe
-    console.log(`[DEBUG] msg de=${fromDebug} fromMe=${fromMeDebug} temConteudo=${!!rawMsg?.message}`)
+    if (!rawMsg?.message) return
+    if (rawMsg.key.fromMe) return
 
-    if (!rawMsg?.message) {
-        console.log('[DEBUG] ignorado: sem conteúdo')
-        return
-    }
-    if (rawMsg.key.fromMe) {
-        console.log('[DEBUG] ignorado: fromMe=true (mensagem enviada pelo próprio bot)')
-        return
-    }
+    // Filtra status/broadcast
+    const remoteJid = rawMsg.key.remoteJid
+    if (!remoteJid || remoteJid === 'status@broadcast') return
 
     // Desempacota mensagens efêmeras/viewOnce
     const msg = unwrapMessage(rawMsg)
-
     const from = msg.key.remoteJid
-    if (!from || from === 'status@broadcast') {
-        console.log(`[DEBUG] ignorado: from=${from}`)
-        return
-    }
 
     const isGroup = from.endsWith('@g.us')
-    const sender = isGroup ? (msg.key.participant || '') : from
+    const sender = isGroup ? (msg.key.participant || from) : from
     const senderNum = sender.replace(/[^0-9]/g, '')
     const isOwner = senderNum === config.ownerNumber.replace(/[^0-9]/g, '')
 
     const type = getContentType(msg.message)
-    if (!type) {
-        console.log('[DEBUG] ignorado: tipo de conteúdo nulo')
-        return
-    }
+    if (!type) return
 
-    const body = extractBody(msg.message)
-    console.log(`[DEBUG] body="${body}" type=${type} senderNum=${senderNum}`)
+    // Tipos de mensagem que nunca terão comandos (ignora silenciosamente)
+    const tiposIgnorados = ['reactionMessage', 'protocolMessage', 'stickerMessage',
+        'audioMessage', 'videoMessage', 'imageMessage', 'documentMessage',
+        'contactMessage', 'locationMessage', 'liveLocationMessage', 'pollCreationMessage',
+        'pollUpdateMessage', 'callLogMessage', 'encReactionMessage']
+
+    if (tiposIgnorados.includes(type)) return
+
+    const body = extractBody(msg.message).trim()
 
     const prefix = config.prefix
-    if (!body.startsWith(prefix)) {
-        console.log(`[DEBUG] ignorado: sem prefixo "${prefix}"`)
-        return
-    }
+    if (!body.startsWith(prefix)) return
 
     const args = body.slice(prefix.length).trim().split(/\s+/)
     const command = args.shift().toLowerCase()
@@ -116,7 +114,7 @@ async function handleMessage(sock, rawMsg) {
     const text = args.join(' ')
 
     // Log do comando recebido
-    console.log(`[CMD] ${senderNum} → ${prefix}${command}${text ? ' ' + text : ''}`.slice(0, 120))
+    console.log(`[CMD] ${senderNum} → ${prefix}${command}${text ? ' ' + text : ''}`)
 
     // Cooldown por usuário+comando
     const cdKey = `${senderNum}:${command}`
@@ -134,7 +132,7 @@ async function handleMessage(sock, rawMsg) {
 
     const fn = commands[command]
     if (!fn) {
-        console.log(`[CMD] comando "${command}" não encontrado`)
+        console.log(`[CMD] "${command}" não encontrado`)
         return
     }
 
@@ -172,6 +170,7 @@ async function handleMessage(sock, rawMsg) {
         await fn(ctx)
     } catch (err) {
         console.error(`[ERRO] !${command}:`, err.message)
+        console.error(err.stack)
         try {
             await ctx.reply(`❌ Erro ao executar *!${command}*:\n${err.message}`)
             await ctx.react('❌')
