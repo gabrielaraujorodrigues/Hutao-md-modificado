@@ -84,6 +84,15 @@ async function menu(ctx) {
         `│ ${config.prefix}abrir\n` +
         `╰──────────────────────╯\n\n` +
 
+        `╭─── 🎉 *BOAS-VINDAS* ─╮\n` +
+        `│ ${config.prefix}bemvindo\n` +
+        `│ ${config.prefix}bemvindo on/off\n` +
+        `│ ${config.prefix}bemvindo msg [texto]\n` +
+        `│ ${config.prefix}saida\n` +
+        `│ ${config.prefix}saida on/off\n` +
+        `│ ${config.prefix}saida msg [texto]\n` +
+        `╰──────────────────────╯\n\n` +
+
         `╭─── ℹ️ *BOT* ──────────╮\n` +
         `│ ${config.prefix}ping\n` +
         `│ ${config.prefix}dono\n` +
