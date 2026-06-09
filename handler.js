@@ -1,5 +1,5 @@
 const config = require('./config')
-const { getContentType, downloadContentFromMessage, jidNormalizedUser } = require('@whiskeysockets/baileys')
+const { getContentType, downloadContentFromMessage } = require('@whiskeysockets/baileys')
 const fs = require('fs')
 const path = require('path')
 
@@ -18,7 +18,7 @@ fs.readdirSync(commandsDir).forEach((file) => {
     }
 })
 
-async function handleMessage(sock, msg, store) {
+async function handleMessage(sock, msg) {
     if (!msg.message) return
     if (msg.key.fromMe) return
 
@@ -38,26 +38,28 @@ async function handleMessage(sock, msg, store) {
     ) || ''
 
     const prefix = config.prefix
-    const isCmd = body.startsWith(prefix)
-    if (!isCmd) return
+    if (!body.startsWith(prefix)) return
 
     const args = body.slice(prefix.length).trim().split(/\s+/)
     const command = args.shift().toLowerCase()
     const text = args.join(' ')
 
-    // Cooldown
+    // Cooldown por usuário e comando
     const cdKey = `${senderNum}:${command}`
     if (cooldowns.has(cdKey)) {
         const remaining = cooldowns.get(cdKey) - Date.now()
         if (remaining > 0) {
             await sock.sendMessage(from, {
-                text: `⏳ Aguarde ${(remaining / 1000).toFixed(1)}s antes de usar esse comando novamente.`
+                text: `⏳ Aguarde *${(remaining / 1000).toFixed(1)}s* antes de usar esse comando novamente.`
             }, { quoted: msg })
             return
         }
     }
     cooldowns.set(cdKey, Date.now() + config.cooldown)
     setTimeout(() => cooldowns.delete(cdKey), config.cooldown)
+
+    const fn = commands[command]
+    if (!fn) return
 
     const ctx = {
         sock,
@@ -71,7 +73,6 @@ async function handleMessage(sock, msg, store) {
         text,
         body,
         type,
-        store,
         reply: (content) => {
             if (typeof content === 'string') {
                 return sock.sendMessage(from, { text: content }, { quoted: msg })
@@ -79,31 +80,22 @@ async function handleMessage(sock, msg, store) {
             return sock.sendMessage(from, content, { quoted: msg })
         },
         react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } }),
-        sendText: (text) => sock.sendMessage(from, { text }),
+        sendText: (t) => sock.sendMessage(from, { text: t }),
         downloadMsg: async () => {
-            const msgType = Object.keys(msg.message)[0]
-            const stream = await downloadContentFromMessage(msg.message[msgType], msgType.replace('Message', ''))
+            const msgData = msg.message[type]
+            const stream = await downloadContentFromMessage(msgData, type.replace('Message', ''))
             const chunks = []
             for await (const chunk of stream) chunks.push(chunk)
             return Buffer.concat(chunks)
         },
     }
 
-    // Busca comando ou alias
-    let fn = commands[command]
-    if (!fn) {
-        // tenta alias sem prefixo (ex: 's' para sticker)
-        fn = commands[command]
-    }
-
-    if (!fn) return
-
     try {
         await ctx.react('⏳')
         await fn(ctx)
     } catch (err) {
-        console.error(`[ERRO] Comando ${command}:`, err.message)
-        await ctx.reply(`❌ Erro ao executar *${command}*:\n${err.message}`)
+        console.error(`[ERRO] !${command}:`, err.message)
+        await ctx.reply(`❌ Erro ao executar *!${command}*:\n${err.message}`)
         await ctx.react('❌')
     }
 }
