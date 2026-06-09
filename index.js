@@ -15,6 +15,16 @@ const { handleMessage } = require('./handler')
 const { handleGroupUpdate } = require('./src/commands/welcome')
 const config = require('./config')
 
+// Captura erros não tratados para não matar o processo silenciosamente
+process.on('uncaughtException', (err) => {
+    console.error(chalk.red('\n[FATAL] Exceção não tratada:'), err.message)
+    console.error(err.stack)
+})
+process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason)
+    console.error(chalk.red('\n[FATAL] Promise rejeitada sem catch:'), msg)
+})
+
 // Logger completamente silencioso — suprime TODOS os logs internos do Baileys
 const SILENT = () => {}
 const logger = {
@@ -28,15 +38,32 @@ if (!fs.existsSync('./session')) fs.mkdirSync('./session')
 
 let retryCount = 0
 
+function clearSession() {
+    try {
+        fs.rmSync('./session/auth', { recursive: true, force: true })
+    } catch {}
+    try {
+        fs.mkdirSync('./session/auth', { recursive: true })
+    } catch {}
+}
+
 async function startBot() {
-    const { version } = await fetchLatestBaileysVersion()
+    // Busca a versão mais recente do WhatsApp Web com fallback caso a rede bloqueie
+    let version = [2, 3000, 1015901307]
+    try {
+        const latest = await fetchLatestBaileysVersion()
+        version = latest.version
+        console.log(chalk.gray(`  [OK] Versão Baileys: ${version.join('.')}`))
+    } catch {
+        console.log(chalk.yellow(`  [AVISO] Não foi possível verificar versão online. Usando versão padrão: ${version.join('.')}`))
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState('./session/auth')
 
     if (retryCount === 0) {
         console.log(chalk.green(`\n╔══════════════════════════════╗`))
         console.log(chalk.green(`║   ${chalk.bold.white(config.botName)} — Iniciando...   ║`))
         console.log(chalk.green(`╚══════════════════════════════╝\n`))
-        console.log(chalk.cyan(`  Baileys v${version.join('.')}`))
         console.log(chalk.cyan(`  Prefixo: ${chalk.bold(config.prefix)}`))
         console.log(chalk.cyan(`  Dono: ${chalk.bold(config.ownerNumber)}\n`))
     }
@@ -52,7 +79,7 @@ async function startBot() {
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
         generateHighQualityLinkPreview: true,
-        getMessage: async () => proto.Message.fromObject({}),
+        getMessage: async () => ({ conversation: '' }),
     })
 
     sock.ev.on('connection.update', async (update) => {
@@ -64,17 +91,23 @@ async function startBot() {
         }
 
         if (connection === 'close') {
-            const code = (lastDisconnect?.error instanceof Boom)
+            const statusCode = (lastDisconnect?.error instanceof Boom)
                 ? lastDisconnect.error.output?.statusCode
                 : 0
-            const loggedOut = code === DisconnectReason.loggedOut
 
-            if (loggedOut) {
-                console.log(chalk.red('\n  Sessão encerrada (logout). Delete a pasta session/ e reinicie.\n'))
+            const loggedOut = statusCode === DisconnectReason.loggedOut
+            const badSession = statusCode === DisconnectReason.badSession
+
+            if (loggedOut || badSession) {
+                const motivo = loggedOut ? 'logout' : 'sessão inválida'
+                console.log(chalk.red(`\n  [SESSÃO] Desconectado por ${motivo}. Limpando sessão para novo QR Code...\n`))
+                clearSession()
+                retryCount = 0
+                setTimeout(startBot, 3000)
             } else {
                 retryCount++
                 const delay = Math.min(retryCount * 3000, 30000)
-                console.log(chalk.yellow(`  Conexão encerrada (código ${code}). Reconectando em ${delay / 1000}s...`))
+                console.log(chalk.yellow(`  [RECONEXÃO] Código ${statusCode} — Tentativa ${retryCount}. Aguardando ${delay / 1000}s...`))
                 setTimeout(startBot, delay)
             }
         } else if (connection === 'open') {
@@ -102,7 +135,17 @@ async function startBot() {
     })
 }
 
+console.log(chalk.cyan('[BOT] Carregando módulos e iniciando...'))
+
 startBot().catch((err) => {
-    console.error(chalk.red('Erro fatal ao iniciar:'), err.message)
-    process.exit(1)
+    console.error(chalk.red('\n[ERRO FATAL ao iniciar:]'), err.message)
+    console.error(err.stack)
+    console.log(chalk.yellow('[BOT] Tentando reiniciar em 10 segundos...'))
+    setTimeout(() => {
+        retryCount = 0
+        startBot().catch((err2) => {
+            console.error(chalk.red('[ERRO FATAL segundo início:]'), err2.message)
+            process.exit(1)
+        })
+    }, 10000)
 })
