@@ -1,8 +1,17 @@
-const { downloadGeneric } = require('../lib/ytdl')
-const ytDlpExec = require('yt-dlp-exec')
+const fetch = require('node-fetch')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+
+// Baixa um buffer de uma URL
+async function downloadBuffer(url) {
+    const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        timeout: 60000,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.buffer()
+}
 
 async function tiktok(ctx) {
     const { reply, react, sock, from, msg, text } = ctx
@@ -11,24 +20,25 @@ async function tiktok(ctx) {
     await react('⬇️')
     await reply('⬇️ Baixando vídeo do TikTok...')
 
-    const out = path.join(os.tmpdir(), `tiktok_${Date.now()}.mp4`)
-    await ytDlpExec(text, {
-        output: out,
-        format: 'best[ext=mp4]/best',
-        noPlaylist: true,
-        quiet: true,
-    })
+    try {
+        // API sem marca d'água
+        const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(text)}`
+        const res = await fetch(apiUrl, { timeout: 20000 })
+        const data = await res.json()
 
-    if (!fs.existsSync(out)) return reply('❌ Não foi possível baixar o vídeo.')
+        if (!data.data?.play) throw new Error('Vídeo não encontrado.')
 
-    await sock.sendMessage(from, {
-        video: fs.readFileSync(out),
-        mimetype: 'video/mp4',
-        caption: '🎵 TikTok',
-    }, { quoted: msg })
-
-    fs.unlinkSync(out)
-    await react('✅')
+        const buffer = await downloadBuffer(data.data.play)
+        await sock.sendMessage(from, {
+            video: buffer,
+            mimetype: 'video/mp4',
+            caption: `🎵 ${data.data.title || 'TikTok'}`,
+        }, { quoted: msg })
+        await react('✅')
+    } catch (err) {
+        await reply(`❌ Erro ao baixar TikTok: ${err.message}`)
+        await react('❌')
+    }
 }
 
 async function instagram(ctx) {
@@ -38,30 +48,38 @@ async function instagram(ctx) {
     await react('📸')
     await reply('⬇️ Baixando do Instagram...')
 
-    const out = path.join(os.tmpdir(), `ig_${Date.now()}.mp4`)
-    await ytDlpExec(text, {
-        output: out,
-        format: 'best[ext=mp4]/best',
-        noPlaylist: true,
-        quiet: true,
-    })
+    try {
+        const apiUrl = `https://api.snapinsta.app/v2?url=${encodeURIComponent(text)}`
+        const res = await fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json',
+            },
+            timeout: 30000,
+        })
+        const data = await res.json()
+        const mediaUrl = data?.data?.[0]?.url || data?.url || data?.media?.[0]
 
-    if (!fs.existsSync(out)) return reply('❌ Não foi possível baixar. Verifique se o perfil é público.')
+        if (!mediaUrl) throw new Error('Mídia não encontrada. Verifique se o perfil é público.')
 
-    const stat = fs.statSync(out)
-    if (stat.size > 60 * 1024 * 1024) {
-        fs.unlinkSync(out)
-        return reply('❌ Arquivo muito grande para enviar.')
+        const buffer = await downloadBuffer(mediaUrl)
+        const isVideo = mediaUrl.includes('.mp4') || data?.data?.[0]?.type === 'video'
+
+        if (isVideo) {
+            await sock.sendMessage(from, {
+                video: buffer, mimetype: 'video/mp4', caption: '📸 Instagram',
+            }, { quoted: msg })
+        } else {
+            await sock.sendMessage(from, {
+                image: buffer, caption: '📸 Instagram',
+            }, { quoted: msg })
+        }
+        await react('✅')
+    } catch (err) {
+        await reply(`❌ Erro ao baixar Instagram: ${err.message}`)
+        await react('❌')
     }
-
-    await sock.sendMessage(from, {
-        video: fs.readFileSync(out),
-        mimetype: 'video/mp4',
-        caption: '📸 Instagram',
-    }, { quoted: msg })
-
-    fs.unlinkSync(out)
-    await react('✅')
 }
 
 async function threads(ctx) {
@@ -71,24 +89,31 @@ async function threads(ctx) {
     await react('⬇️')
     await reply('⬇️ Baixando do Threads...')
 
-    const out = path.join(os.tmpdir(), `threads_${Date.now()}.mp4`)
-    await ytDlpExec(text, {
-        output: out,
-        format: 'best[ext=mp4]/best',
-        noPlaylist: true,
-        quiet: true,
-    })
+    try {
+        const apiUrl = `https://threadsdl.com/api?url=${encodeURIComponent(text)}`
+        const res = await fetch(apiUrl, { timeout: 20000 })
+        const data = await res.json()
+        const mediaUrl = data?.data?.video_url || data?.data?.image_url || data?.url
 
-    if (!fs.existsSync(out)) return reply('❌ Não foi possível baixar o conteúdo.')
+        if (!mediaUrl) throw new Error('Mídia não encontrada.')
 
-    await sock.sendMessage(from, {
-        video: fs.readFileSync(out),
-        mimetype: 'video/mp4',
-        caption: '🧵 Threads',
-    }, { quoted: msg })
+        const buffer = await downloadBuffer(mediaUrl)
+        const isVideo = mediaUrl.includes('.mp4') || data?.data?.video_url
 
-    fs.unlinkSync(out)
-    await react('✅')
+        if (isVideo) {
+            await sock.sendMessage(from, {
+                video: buffer, mimetype: 'video/mp4', caption: '🧵 Threads',
+            }, { quoted: msg })
+        } else {
+            await sock.sendMessage(from, {
+                image: buffer, caption: '🧵 Threads',
+            }, { quoted: msg })
+        }
+        await react('✅')
+    } catch (err) {
+        await reply(`❌ Erro ao baixar Threads: ${err.message}`)
+        await react('❌')
+    }
 }
 
 async function twitter(ctx) {
@@ -98,24 +123,26 @@ async function twitter(ctx) {
     await react('⬇️')
     await reply('⬇️ Baixando do Twitter/X...')
 
-    const out = path.join(os.tmpdir(), `twitter_${Date.now()}.mp4`)
-    await ytDlpExec(text, {
-        output: out,
-        format: 'best[ext=mp4]/best',
-        noPlaylist: true,
-        quiet: true,
-    })
+    try {
+        const apiUrl = `https://twitsave.com/info?url=${encodeURIComponent(text)}`
+        const res = await fetch(apiUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 20000,
+        })
+        const data = await res.json()
+        const mediaUrl = data?.data?.[0]?.url || data?.url
 
-    if (!fs.existsSync(out)) return reply('❌ Não foi possível baixar o vídeo.')
+        if (!mediaUrl) throw new Error('Vídeo não encontrado.')
 
-    await sock.sendMessage(from, {
-        video: fs.readFileSync(out),
-        mimetype: 'video/mp4',
-        caption: '🐦 Twitter/X',
-    }, { quoted: msg })
-
-    fs.unlinkSync(out)
-    await react('✅')
+        const buffer = await downloadBuffer(mediaUrl)
+        await sock.sendMessage(from, {
+            video: buffer, mimetype: 'video/mp4', caption: '🐦 Twitter/X',
+        }, { quoted: msg })
+        await react('✅')
+    } catch (err) {
+        await reply(`❌ Erro ao baixar Twitter: ${err.message}`)
+        await react('❌')
+    }
 }
 
 async function pinterest(ctx) {
@@ -125,24 +152,34 @@ async function pinterest(ctx) {
     await react('📌')
     await reply('⬇️ Baixando do Pinterest...')
 
-    const out = path.join(os.tmpdir(), `pinterest_${Date.now()}.mp4`)
-    await ytDlpExec(text, {
-        output: out,
-        format: 'best[ext=mp4]/best/best[ext=jpg]/best[ext=png]',
-        noPlaylist: true,
-        quiet: true,
-    })
+    try {
+        const apiUrl = `https://api.pinterestdownloader.com/download?url=${encodeURIComponent(text)}`
+        const res = await fetch(apiUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 20000,
+        })
+        const data = await res.json()
+        const mediaUrl = data?.data?.video_url || data?.data?.image_url || data?.url
 
-    if (!fs.existsSync(out)) return reply('❌ Não foi possível baixar o conteúdo.')
+        if (!mediaUrl) throw new Error('Mídia não encontrada.')
 
-    await sock.sendMessage(from, {
-        video: fs.readFileSync(out),
-        mimetype: 'video/mp4',
-        caption: '📌 Pinterest',
-    }, { quoted: msg })
+        const buffer = await downloadBuffer(mediaUrl)
+        const isVideo = mediaUrl.includes('.mp4') || data?.data?.video_url
 
-    fs.unlinkSync(out)
-    await react('✅')
+        if (isVideo) {
+            await sock.sendMessage(from, {
+                video: buffer, mimetype: 'video/mp4', caption: '📌 Pinterest',
+            }, { quoted: msg })
+        } else {
+            await sock.sendMessage(from, {
+                image: buffer, caption: '📌 Pinterest',
+            }, { quoted: msg })
+        }
+        await react('✅')
+    } catch (err) {
+        await reply(`❌ Erro ao baixar Pinterest: ${err.message}`)
+        await react('❌')
+    }
 }
 
 module.exports = { tiktok, instagram, ig: instagram, threads, twitter, pinterest }
