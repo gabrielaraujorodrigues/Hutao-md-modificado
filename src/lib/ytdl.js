@@ -1,88 +1,83 @@
-const { Innertube } = require('youtubei.js')
+const playdl = require('play-dl')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const { execSync } = require('child_process')
 
-let yt = null
-
-async function getYT() {
-    if (!yt) {
-        yt = await Innertube.create({ cache: false, generate_session_locally: true })
-    }
-    return yt
+function hasFfmpeg() {
+    try { execSync('ffmpeg -version', { stdio: 'ignore' }); return true } catch { return false }
 }
 
 async function searchYouTube(query) {
-    const client = await getYT()
-    const results = await client.search(query, { type: 'video' })
-    const video = results.videos?.[0]
+    const results = await playdl.search(query, { source: { youtube: 'video' }, limit: 1 })
+    const video = results[0]
     if (!video) throw new Error('Nenhum resultado encontrado.')
     return {
         id: video.id,
-        title: video.title?.text || 'Sem título',
-        duration: video.duration?.seconds || 0,
-        url: `https://www.youtube.com/watch?v=${video.id}`,
+        title: video.title || 'Sem título',
+        duration: video.durationInSec || 0,
+        url: video.url,
         thumbnail: video.thumbnails?.[0]?.url || '',
-        uploader: video.author?.name || 'Desconhecido',
-        views: video.view_count?.text || '0',
+        uploader: video.channel?.name || 'Desconhecido',
+        views: video.views || 0,
     }
 }
 
 async function downloadAudio(url) {
-    const client = await getYT()
-    const id = extractId(url)
-    const info = await client.getInfo(id)
+    const streamData = await playdl.stream(url, { quality: 1 })
+    const rawPath = path.join(os.tmpdir(), `yt_raw_${Date.now()}.webm`)
 
-    const format = info.streaming_data?.adaptive_formats
-        ?.filter(f => f.has_audio && !f.has_video)
-        ?.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))?.[0]
-
-    if (!format) throw new Error('Formato de áudio não encontrado.')
-
-    const outPath = path.join(os.tmpdir(), `yt_audio_${Date.now()}.mp3`)
-    const stream = await client.download(id, {
-        type: 'audio',
-        quality: 'best',
-        format: 'mp4',
+    await new Promise((resolve, reject) => {
+        const out = fs.createWriteStream(rawPath)
+        streamData.stream.pipe(out)
+        out.on('finish', resolve)
+        out.on('error', reject)
     })
 
-    await writeStream(stream, outPath)
-    return outPath
+    if (!fs.existsSync(rawPath)) throw new Error('Falha ao baixar o áudio.')
+
+    // Tenta converter para MP3 com ffmpeg
+    if (hasFfmpeg()) {
+        const mp3Path = rawPath.replace('.webm', '.mp3')
+        try {
+            execSync(`ffmpeg -i "${rawPath}" -vn -acodec libmp3lame -q:a 3 -y "${mp3Path}" 2>/dev/null`, { timeout: 60000 })
+            fs.unlinkSync(rawPath)
+            return { path: mp3Path, mimetype: 'audio/mpeg' }
+        } catch {
+            // Se ffmpeg falhou na conversão, usa o webm mesmo
+        }
+    }
+
+    // Sem ffmpeg: retorna ogg/opus (WhatsApp aceita)
+    return { path: rawPath, mimetype: 'audio/ogg; codecs=opus' }
 }
 
 async function downloadVideo(url, maxHeight = 480) {
-    const client = await getYT()
-    const id = extractId(url)
+    const streamData = await playdl.stream(url, {
+        quality: maxHeight <= 360 ? 2 : 1,
+    })
+    const rawPath = path.join(os.tmpdir(), `yt_video_${Date.now()}.webm`)
 
-    const outPath = path.join(os.tmpdir(), `yt_video_${Date.now()}.mp4`)
-    const stream = await client.download(id, {
-        type: 'video+audio',
-        quality: `${maxHeight}p`,
-        format: 'mp4',
+    await new Promise((resolve, reject) => {
+        const out = fs.createWriteStream(rawPath)
+        streamData.stream.pipe(out)
+        out.on('finish', resolve)
+        out.on('error', reject)
     })
 
-    await writeStream(stream, outPath)
-    return outPath
-}
+    if (!fs.existsSync(rawPath)) throw new Error('Falha ao baixar o vídeo.')
 
-function extractId(url) {
-    if (!url.includes('http')) return url
-    const match = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
-    if (match) return match[1]
-    throw new Error('Link do YouTube inválido.')
-}
+    // Converte para mp4 com ffmpeg
+    if (hasFfmpeg()) {
+        const mp4Path = rawPath.replace('.webm', '.mp4')
+        try {
+            execSync(`ffmpeg -i "${rawPath}" -c:v libx264 -c:a aac -movflags +faststart -y "${mp4Path}" 2>/dev/null`, { timeout: 120000 })
+            fs.unlinkSync(rawPath)
+            return { path: mp4Path, mimetype: 'video/mp4' }
+        } catch {}
+    }
 
-async function writeStream(stream, outPath) {
-    const { Readable } = require('stream')
-    const chunks = []
-    for await (const chunk of stream) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
-    }
-    const buffer = Buffer.concat(chunks)
-    fs.writeFileSync(outPath, buffer)
-    if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
-        throw new Error('Falha ao salvar o arquivo de mídia.')
-    }
+    return { path: rawPath, mimetype: 'video/webm' }
 }
 
 function formatDuration(seconds) {
@@ -92,8 +87,11 @@ function formatDuration(seconds) {
     return `${m}:${String(s).padStart(2, '0')}`
 }
 
-function formatViews(text) {
-    return text || '0'
+function formatViews(n) {
+    if (!n) return '0'
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+    return String(n)
 }
 
 module.exports = { searchYouTube, downloadAudio, downloadVideo, formatDuration, formatViews }
