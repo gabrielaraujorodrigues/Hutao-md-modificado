@@ -12,6 +12,7 @@ const fs = require('fs')
 const chalk = require('chalk')
 const qrcode = require('qrcode-terminal')
 const { handleMessage } = require('./handler')
+const { handleGroupUpdate } = require('./src/commands/welcome')
 const config = require('./config')
 
 // Logger completamente silencioso — suprime TODOS os logs internos do Baileys
@@ -92,6 +93,12 @@ async function startBot() {
                 console.error(chalk.red('[HANDLER]'), err.message)
             })
         }
+    })
+
+    sock.ev.on('group-participants.update', async (update) => {
+        handleGroupUpdate(sock, update).catch((err) => {
+            console.error(chalk.red('[GRUPO]'), err.message)
+        })
     })
 }
 
