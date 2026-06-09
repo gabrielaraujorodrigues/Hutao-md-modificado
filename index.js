@@ -15,17 +15,15 @@ const { handleMessage } = require('./handler')
 const { handleGroupUpdate } = require('./src/commands/welcome')
 const config = require('./config')
 
-// Captura erros não tratados para não matar o processo silenciosamente
 process.on('uncaughtException', (err) => {
     console.error(chalk.red('\n[FATAL] Exceção não tratada:'), err.message)
     console.error(err.stack)
 })
 process.on('unhandledRejection', (reason) => {
     const msg = reason instanceof Error ? reason.message : String(reason)
-    console.error(chalk.red('\n[FATAL] Promise rejeitada sem catch:'), msg)
+    console.error(chalk.red('\n[FATAL] Promise rejeitada:'), msg)
 })
 
-// Logger completamente silencioso — suprime TODOS os logs internos do Baileys
 const SILENT = () => {}
 const logger = {
     level: 'silent',
@@ -48,9 +46,8 @@ async function startBot() {
     try {
         const latest = await fetchLatestBaileysVersion()
         version = latest.version
-        console.log(chalk.gray(`  [OK] Versão Baileys: ${version.join('.')}`))
     } catch {
-        console.log(chalk.yellow(`  [AVISO] Usando versão padrão: ${version.join('.')}`))
+        console.log(chalk.yellow(`  [AVISO] Usando versão padrão do Baileys: ${version.join('.')}`))
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./session/auth')
@@ -59,8 +56,8 @@ async function startBot() {
         console.log(chalk.green(`\n╔══════════════════════════════╗`))
         console.log(chalk.green(`║   ${chalk.bold.white(config.botName)} — Iniciando...   ║`))
         console.log(chalk.green(`╚══════════════════════════════╝\n`))
-        console.log(chalk.cyan(`  Prefixo: ${chalk.bold(config.prefix)}`))
-        console.log(chalk.cyan(`  Dono: ${chalk.bold(config.ownerNumber)}\n`))
+        console.log(chalk.cyan(`  Prefixo : ${chalk.bold(config.prefix)}`))
+        console.log(chalk.cyan(`  Dono    : ${chalk.bold(config.ownerNumber)}\n`))
     }
 
     const sock = makeWASocket({
@@ -74,9 +71,7 @@ async function startBot() {
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
         generateHighQualityLinkPreview: true,
-        getMessage: async (key) => {
-            return proto.Message.fromObject({})
-        },
+        getMessage: async () => proto.Message.fromObject({}),
     })
 
     sock.ev.on('connection.update', async (update) => {
@@ -92,12 +87,11 @@ async function startBot() {
                 ? lastDisconnect.error.output?.statusCode
                 : 0
 
-            const loggedOut = statusCode === DisconnectReason.loggedOut
+            const loggedOut  = statusCode === DisconnectReason.loggedOut
             const badSession = statusCode === DisconnectReason.badSession
 
             if (loggedOut || badSession) {
-                const motivo = loggedOut ? 'logout' : 'sessão inválida'
-                console.log(chalk.red(`\n  [SESSÃO] Desconectado por ${motivo}. Limpando sessão...\n`))
+                console.log(chalk.red(`\n  [SESSÃO] ${loggedOut ? 'Logout detectado' : 'Sessão inválida'}. Limpando e aguardando novo QR...\n`))
                 clearSession()
                 retryCount = 0
                 setTimeout(startBot, 3000)
@@ -117,14 +111,7 @@ async function startBot() {
     sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        // DEBUG: mostra todo evento de mensagem recebido
-        console.log(chalk.gray(`[MSG-IN] type=${type} qtd=${messages.length}`))
-
-        if (type !== 'notify') {
-            console.log(chalk.gray(`[MSG-IN] ignorando type=${type}`))
-            return
-        }
-
+        if (type !== 'notify') return
         for (const msg of messages) {
             handleMessage(sock, msg).catch((err) => {
                 console.error(chalk.red('[HANDLER ERRO]'), err.message)
@@ -140,7 +127,7 @@ async function startBot() {
     })
 }
 
-console.log(chalk.cyan('[BOT] Carregando módulos e iniciando...'))
+console.log(chalk.cyan('[BOT] Iniciando...'))
 
 startBot().catch((err) => {
     console.error(chalk.red('\n[ERRO FATAL ao iniciar:]'), err.message)
@@ -149,7 +136,7 @@ startBot().catch((err) => {
     setTimeout(() => {
         retryCount = 0
         startBot().catch((err2) => {
-            console.error(chalk.red('[ERRO FATAL segundo início:]'), err2.message)
+            console.error(chalk.red('[ERRO FATAL (2ª tentativa):]'), err2.message)
             process.exit(1)
         })
     }, 10000)
