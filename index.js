@@ -7,7 +7,6 @@ const {
     Browsers,
     proto,
 } = require('@whiskeysockets/baileys')
-const pino = require('pino')
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
 const chalk = require('chalk')
@@ -15,20 +14,31 @@ const qrcode = require('qrcode-terminal')
 const { handleMessage } = require('./handler')
 const config = require('./config')
 
-const logger = pino({ level: 'silent' })
+// Logger completamente silencioso — suprime TODOS os logs internos do Baileys
+const SILENT = () => {}
+const logger = {
+    level: 'silent',
+    trace: SILENT, debug: SILENT, info: SILENT,
+    warn: SILENT, error: SILENT, fatal: SILENT,
+    child: () => logger,
+}
 
 if (!fs.existsSync('./session')) fs.mkdirSync('./session')
+
+let retryCount = 0
 
 async function startBot() {
     const { version } = await fetchLatestBaileysVersion()
     const { state, saveCreds } = await useMultiFileAuthState('./session/auth')
 
-    console.log(chalk.green(`\n╔══════════════════════════════╗`))
-    console.log(chalk.green(`║   ${chalk.bold.white(config.botName)} — Iniciando...   ║`))
-    console.log(chalk.green(`╚══════════════════════════════╝\n`))
-    console.log(chalk.cyan(`  Baileys v${version}`))
-    console.log(chalk.cyan(`  Prefixo: ${chalk.bold(config.prefix)}`))
-    console.log(chalk.cyan(`  Dono: ${chalk.bold(config.ownerNumber)}\n`))
+    if (retryCount === 0) {
+        console.log(chalk.green(`\n╔══════════════════════════════╗`))
+        console.log(chalk.green(`║   ${chalk.bold.white(config.botName)} — Iniciando...   ║`))
+        console.log(chalk.green(`╚══════════════════════════════╝\n`))
+        console.log(chalk.cyan(`  Baileys v${version.join('.')}`))
+        console.log(chalk.cyan(`  Prefixo: ${chalk.bold(config.prefix)}`))
+        console.log(chalk.cyan(`  Dono: ${chalk.bold(config.ownerNumber)}\n`))
+    }
 
     const sock = makeWASocket({
         version,
@@ -40,9 +50,8 @@ async function startBot() {
         },
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
-        getMessage: async () => {
-            return proto.Message.fromObject({})
-        },
+        generateHighQualityLinkPreview: true,
+        getMessage: async () => proto.Message.fromObject({}),
     })
 
     sock.ev.on('connection.update', async (update) => {
@@ -54,18 +63,23 @@ async function startBot() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error instanceof Boom)
-                ? lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut
-                : true
+            const code = (lastDisconnect?.error instanceof Boom)
+                ? lastDisconnect.error.output?.statusCode
+                : 0
+            const loggedOut = code === DisconnectReason.loggedOut
 
-            if (shouldReconnect) {
-                console.log(chalk.yellow('  Reconectando...'))
-                setTimeout(startBot, 3000)
+            if (loggedOut) {
+                console.log(chalk.red('\n  Sessão encerrada (logout). Delete a pasta session/ e reinicie.\n'))
             } else {
-                console.log(chalk.red('  Sessão encerrada. Delete a pasta session/ e reinicie.'))
+                retryCount++
+                const delay = Math.min(retryCount * 3000, 30000)
+                console.log(chalk.yellow(`  Conexão encerrada (código ${code}). Reconectando em ${delay / 1000}s...`))
+                setTimeout(startBot, delay)
             }
         } else if (connection === 'open') {
+            retryCount = 0
             console.log(chalk.green('\n  ✅ Bot conectado com sucesso!\n'))
+            console.log(chalk.gray('  Aguardando mensagens...\n'))
         }
     })
 
@@ -74,16 +88,14 @@ async function startBot() {
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return
         for (const msg of messages) {
-            try {
-                await handleMessage(sock, msg)
-            } catch (err) {
-                console.error(chalk.red('Erro ao processar mensagem:'), err.message)
-            }
+            handleMessage(sock, msg).catch((err) => {
+                console.error(chalk.red('[HANDLER]'), err.message)
+            })
         }
     })
 }
 
 startBot().catch((err) => {
-    console.error(chalk.red('Erro fatal:'), err)
+    console.error(chalk.red('Erro fatal ao iniciar:'), err.message)
     process.exit(1)
 })
