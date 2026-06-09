@@ -39,23 +39,18 @@ if (!fs.existsSync('./session')) fs.mkdirSync('./session')
 let retryCount = 0
 
 function clearSession() {
-    try {
-        fs.rmSync('./session/auth', { recursive: true, force: true })
-    } catch {}
-    try {
-        fs.mkdirSync('./session/auth', { recursive: true })
-    } catch {}
+    try { fs.rmSync('./session/auth', { recursive: true, force: true }) } catch {}
+    try { fs.mkdirSync('./session/auth', { recursive: true }) } catch {}
 }
 
 async function startBot() {
-    // Busca a versão mais recente do WhatsApp Web com fallback caso a rede bloqueie
     let version = [2, 3000, 1015901307]
     try {
         const latest = await fetchLatestBaileysVersion()
         version = latest.version
         console.log(chalk.gray(`  [OK] Versão Baileys: ${version.join('.')}`))
     } catch {
-        console.log(chalk.yellow(`  [AVISO] Não foi possível verificar versão online. Usando versão padrão: ${version.join('.')}`))
+        console.log(chalk.yellow(`  [AVISO] Usando versão padrão: ${version.join('.')}`))
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./session/auth')
@@ -79,7 +74,9 @@ async function startBot() {
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
         generateHighQualityLinkPreview: true,
-        getMessage: async () => ({ conversation: '' }),
+        getMessage: async (key) => {
+            return proto.Message.fromObject({})
+        },
     })
 
     sock.ev.on('connection.update', async (update) => {
@@ -100,7 +97,7 @@ async function startBot() {
 
             if (loggedOut || badSession) {
                 const motivo = loggedOut ? 'logout' : 'sessão inválida'
-                console.log(chalk.red(`\n  [SESSÃO] Desconectado por ${motivo}. Limpando sessão para novo QR Code...\n`))
+                console.log(chalk.red(`\n  [SESSÃO] Desconectado por ${motivo}. Limpando sessão...\n`))
                 clearSession()
                 retryCount = 0
                 setTimeout(startBot, 3000)
@@ -120,10 +117,18 @@ async function startBot() {
     sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return
+        // DEBUG: mostra todo evento de mensagem recebido
+        console.log(chalk.gray(`[MSG-IN] type=${type} qtd=${messages.length}`))
+
+        if (type !== 'notify') {
+            console.log(chalk.gray(`[MSG-IN] ignorando type=${type}`))
+            return
+        }
+
         for (const msg of messages) {
             handleMessage(sock, msg).catch((err) => {
-                console.error(chalk.red('[HANDLER]'), err.message)
+                console.error(chalk.red('[HANDLER ERRO]'), err.message)
+                console.error(err.stack)
             })
         }
     })
