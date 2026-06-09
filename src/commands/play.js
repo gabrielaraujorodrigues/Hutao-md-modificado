@@ -9,7 +9,6 @@ async function play(ctx) {
     await reply(`🔎 Buscando *${text}*...`)
 
     const info = await searchYouTube(text)
-
     await reply(
         `🎵 *${info.title}*\n` +
         `👤 ${info.uploader}\n` +
@@ -17,7 +16,7 @@ async function play(ctx) {
         `⬇️ Baixando áudio...`
     )
 
-    const filePath = await downloadAudio(info.url)
+    const { path: filePath, mimetype } = await downloadAudio(info.url)
     const stat = fs.statSync(filePath)
 
     if (stat.size > 60 * 1024 * 1024) {
@@ -27,7 +26,7 @@ async function play(ctx) {
 
     await sock.sendMessage(from, {
         audio: fs.readFileSync(filePath),
-        mimetype: 'audio/mp4',
+        mimetype,
         ptt: false,
     }, { quoted: msg })
 
@@ -43,15 +42,15 @@ async function ytmp3(ctx) {
 
     const isUrl = text.startsWith('http')
     const info = isUrl
-        ? { url: text, title: 'Áudio', duration: 0, uploader: '', views: '' }
+        ? { url: text, title: 'Áudio', duration: 0, uploader: '', views: 0 }
         : await searchYouTube(text)
 
     await reply(`⬇️ Baixando *${info.title}* em MP3...`)
-    const filePath = await downloadAudio(info.url)
+    const { path: filePath, mimetype } = await downloadAudio(info.url)
 
     await sock.sendMessage(from, {
         audio: fs.readFileSync(filePath),
-        mimetype: 'audio/mp4',
+        mimetype,
         ptt: false,
     }, { quoted: msg })
 
@@ -67,21 +66,21 @@ async function ytmp4(ctx) {
 
     const isUrl = text.startsWith('http')
     const info = isUrl
-        ? { url: text, title: 'Vídeo', duration: 0, uploader: '', views: '' }
+        ? { url: text, title: 'Vídeo', duration: 0, uploader: '', views: 0 }
         : await searchYouTube(text)
 
-    await reply(`⬇️ Baixando *${info.title}* em MP4 (480p)...`)
-    const filePath = await downloadVideo(info.url, 480)
+    await reply(`⬇️ Baixando *${info.title}* em vídeo...`)
+    const { path: filePath, mimetype } = await downloadVideo(info.url, 480)
 
     const stat = fs.statSync(filePath)
     if (stat.size > 60 * 1024 * 1024) {
         fs.unlinkSync(filePath)
-        return reply('❌ Vídeo muito grande (acima de 60 MB). Use *!ytmp3* para áudio.')
+        return reply('❌ Vídeo muito grande (acima de 60 MB). Use *!ytmp3* para baixar só o áudio.')
     }
 
     await sock.sendMessage(from, {
         video: fs.readFileSync(filePath),
-        mimetype: 'video/mp4',
+        mimetype,
         caption: `🎬 ${info.title}`,
     }, { quoted: msg })
 
