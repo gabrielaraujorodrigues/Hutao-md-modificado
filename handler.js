@@ -67,14 +67,28 @@ function extractBody(message) {
 }
 
 async function handleMessage(sock, rawMsg) {
-    if (!rawMsg?.message) return
-    if (rawMsg.key.fromMe) return
+    // DEBUG: loga cada mensagem recebida antes de qualquer filtro
+    const fromDebug = rawMsg?.key?.remoteJid || 'desconhecido'
+    const fromMeDebug = rawMsg?.key?.fromMe
+    console.log(`[DEBUG] msg de=${fromDebug} fromMe=${fromMeDebug} temConteudo=${!!rawMsg?.message}`)
+
+    if (!rawMsg?.message) {
+        console.log('[DEBUG] ignorado: sem conteúdo')
+        return
+    }
+    if (rawMsg.key.fromMe) {
+        console.log('[DEBUG] ignorado: fromMe=true (mensagem enviada pelo próprio bot)')
+        return
+    }
 
     // Desempacota mensagens efêmeras/viewOnce
     const msg = unwrapMessage(rawMsg)
 
     const from = msg.key.remoteJid
-    if (!from || from === 'status@broadcast') return
+    if (!from || from === 'status@broadcast') {
+        console.log(`[DEBUG] ignorado: from=${from}`)
+        return
+    }
 
     const isGroup = from.endsWith('@g.us')
     const sender = isGroup ? (msg.key.participant || '') : from
@@ -82,20 +96,27 @@ async function handleMessage(sock, rawMsg) {
     const isOwner = senderNum === config.ownerNumber.replace(/[^0-9]/g, '')
 
     const type = getContentType(msg.message)
-    if (!type) return
+    if (!type) {
+        console.log('[DEBUG] ignorado: tipo de conteúdo nulo')
+        return
+    }
 
     const body = extractBody(msg.message)
+    console.log(`[DEBUG] body="${body}" type=${type} senderNum=${senderNum}`)
 
     const prefix = config.prefix
-    if (!body.startsWith(prefix)) return
+    if (!body.startsWith(prefix)) {
+        console.log(`[DEBUG] ignorado: sem prefixo "${prefix}"`)
+        return
+    }
 
     const args = body.slice(prefix.length).trim().split(/\s+/)
     const command = args.shift().toLowerCase()
     if (!command) return
     const text = args.join(' ')
 
-    // Log de debug (útil pra ver se os comandos chegam)
-    console.log(`[CMD] ${senderNum} → !${command} ${text}`.slice(0, 120))
+    // Log do comando recebido
+    console.log(`[CMD] ${senderNum} → ${prefix}${command}${text ? ' ' + text : ''}`.slice(0, 120))
 
     // Cooldown por usuário+comando
     const cdKey = `${senderNum}:${command}`
@@ -113,7 +134,7 @@ async function handleMessage(sock, rawMsg) {
 
     const fn = commands[command]
     if (!fn) {
-        // Comando não existe — silêncioso, não responde
+        console.log(`[CMD] comando "${command}" não encontrado`)
         return
     }
 
