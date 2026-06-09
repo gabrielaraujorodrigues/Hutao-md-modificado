@@ -2,13 +2,54 @@ const { downloadContentFromMessage, getContentType } = require('@whiskeysockets/
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const { execSync } = require('child_process')
+
+function hasFfmpeg() {
+    try { execSync('ffmpeg -version', { stdio: 'ignore' }); return true } catch { return false }
+}
+
+function hasSharp() {
+    try { require('sharp'); return true } catch { return false }
+}
+
+async function toWebp(inputPath, isVideo) {
+    const outPath = inputPath.replace(/\.[^.]+$/, '.webp')
+
+    if (hasFfmpeg()) {
+        if (isVideo) {
+            execSync(
+                `ffmpeg -i "${inputPath}" -vf "scale=512:512:force_original_aspect_ratio=decrease,fps=15" -loop 0 -t 6 -y "${outPath}" 2>/dev/null`,
+                { timeout: 30000 }
+            )
+        } else {
+            execSync(
+                `ffmpeg -i "${inputPath}" -vf "scale=512:512:force_original_aspect_ratio=decrease" -y "${outPath}" 2>/dev/null`,
+                { timeout: 15000 }
+            )
+        }
+        return outPath
+    }
+
+    if (!isVideo && hasSharp()) {
+        const sharp = require('sharp')
+        await sharp(inputPath)
+            .resize(512, 512, { fit: 'inside' })
+            .webp({ quality: 80 })
+            .toFile(outPath)
+        return outPath
+    }
+
+    throw new Error(
+        'Para criar figurinhas, instale o *ffmpeg* no servidor.\n' +
+        'No Termux: `pkg install ffmpeg`'
+    )
+}
 
 async function sticker(ctx) {
     const { sock, from, msg, reply, react } = ctx
 
     let mediaMsg = msg
 
-    // Se for resposta a outra mensagem
     if (msg.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
         const q = msg.message.extendedTextMessage.contextInfo.quotedMessage
         const qCtx = msg.message.extendedTextMessage.contextInfo
@@ -38,49 +79,27 @@ async function sticker(ctx) {
 
     const ext = mediaType === 'videoMessage' ? 'mp4' : 'jpg'
     const tmpIn = path.join(os.tmpdir(), `stk_in_${Date.now()}.${ext}`)
-    const tmpOut = path.join(os.tmpdir(), `stk_out_${Date.now()}.webp`)
+    const tmpOut = tmpIn.replace(`.${ext}`, '.webp')
 
     fs.writeFileSync(tmpIn, buffer)
 
     try {
-        // Tenta converter com ffmpeg
-        const { execSync } = require('child_process')
-        if (mediaType === 'videoMessage') {
-            execSync(
-                `ffmpeg -i "${tmpIn}" -vf "scale=512:512:force_original_aspect_ratio=decrease,fps=15" -loop 0 -ss 0 -t 6 -y "${tmpOut}" 2>/dev/null`,
-                { timeout: 30000 }
-            )
-        } else {
-            execSync(
-                `ffmpeg -i "${tmpIn}" -vf "scale=512:512:force_original_aspect_ratio=decrease" -y "${tmpOut}" 2>/dev/null`,
-                { timeout: 15000 }
-            )
-        }
-    } catch {
-        // Fallback: usa sharp (pura JS, sem ffmpeg)
-        try {
-            const sharp = require('sharp')
-            await sharp(tmpIn)
-                .resize(512, 512, { fit: 'inside' })
-                .webp({ quality: 80 })
-                .toFile(tmpOut)
-        } catch (sharpErr) {
-            if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn)
-            return reply(`❌ Não foi possível criar a figurinha.\nInstale o ffmpeg para melhor suporte: *pkg install ffmpeg*`)
-        }
-    }
+        await toWebp(tmpIn, mediaType === 'videoMessage')
 
-    if (!fs.existsSync(tmpOut)) {
+        if (!fs.existsSync(tmpOut)) throw new Error('Falha ao gerar WebP.')
+
+        const stickerBuffer = fs.readFileSync(tmpOut)
+        fs.unlinkSync(tmpIn)
+        fs.unlinkSync(tmpOut)
+
+        await sock.sendMessage(from, { sticker: stickerBuffer }, { quoted: msg })
+        await react('✅')
+    } catch (err) {
         if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn)
-        return reply('❌ Falha ao gerar a figurinha.')
+        if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut)
+        await reply(`❌ ${err.message}`)
+        await react('❌')
     }
-
-    const stickerBuffer = fs.readFileSync(tmpOut)
-    if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn)
-    if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut)
-
-    await sock.sendMessage(from, { sticker: stickerBuffer }, { quoted: msg })
-    await react('✅')
 }
 
 module.exports = { sticker, figurinha: sticker, s: sticker }
