@@ -1,69 +1,88 @@
-const ytDlpExec = require('yt-dlp-exec')
-const path = require('path')
+const { Innertube } = require('youtubei.js')
 const fs = require('fs')
+const path = require('path')
 const os = require('os')
 
-const tmpDir = os.tmpdir()
+let yt = null
+
+async function getYT() {
+    if (!yt) {
+        yt = await Innertube.create({ cache: false, generate_session_locally: true })
+    }
+    return yt
+}
 
 async function searchYouTube(query) {
-    const result = await ytDlpExec(`ytsearch1:${query}`, {
-        dumpSingleJson: true,
-        noPlaylist: true,
-        noWarnings: true,
-        quiet: true,
-    })
-    if (!result || !result.id) throw new Error('Nenhum resultado encontrado.')
+    const client = await getYT()
+    const results = await client.search(query, { type: 'video' })
+    const video = results.videos?.[0]
+    if (!video) throw new Error('Nenhum resultado encontrado.')
     return {
-        id: result.id,
-        title: result.title,
-        duration: result.duration,
-        url: result.webpage_url || `https://www.youtube.com/watch?v=${result.id}`,
-        thumbnail: result.thumbnail,
-        uploader: result.uploader,
-        views: result.view_count,
+        id: video.id,
+        title: video.title?.text || 'Sem título',
+        duration: video.duration?.seconds || 0,
+        url: `https://www.youtube.com/watch?v=${video.id}`,
+        thumbnail: video.thumbnails?.[0]?.url || '',
+        uploader: video.author?.name || 'Desconhecido',
+        views: video.view_count?.text || '0',
     }
 }
 
 async function downloadAudio(url) {
-    const out = path.join(tmpDir, `yt_audio_${Date.now()}.mp3`)
-    await ytDlpExec(url, {
-        output: out,
-        extractAudio: true,
-        audioFormat: 'mp3',
-        audioQuality: '128K',
-        noPlaylist: true,
-        noWarnings: true,
-        quiet: true,
+    const client = await getYT()
+    const id = extractId(url)
+    const info = await client.getInfo(id)
+
+    const format = info.streaming_data?.adaptive_formats
+        ?.filter(f => f.has_audio && !f.has_video)
+        ?.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))?.[0]
+
+    if (!format) throw new Error('Formato de áudio não encontrado.')
+
+    const outPath = path.join(os.tmpdir(), `yt_audio_${Date.now()}.mp3`)
+    const stream = await client.download(id, {
+        type: 'audio',
+        quality: 'best',
+        format: 'mp4',
     })
-    if (!fs.existsSync(out)) throw new Error('Falha ao baixar áudio.')
-    return out
+
+    await writeStream(stream, outPath)
+    return outPath
 }
 
 async function downloadVideo(url, maxHeight = 480) {
-    const out = path.join(tmpDir, `yt_video_${Date.now()}.mp4`)
-    await ytDlpExec(url, {
-        output: out,
-        format: `bestvideo[height<=${maxHeight}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${maxHeight}][ext=mp4]/best[ext=mp4]/best`,
-        mergeOutputFormat: 'mp4',
-        noPlaylist: true,
-        noWarnings: true,
-        quiet: true,
+    const client = await getYT()
+    const id = extractId(url)
+
+    const outPath = path.join(os.tmpdir(), `yt_video_${Date.now()}.mp4`)
+    const stream = await client.download(id, {
+        type: 'video+audio',
+        quality: `${maxHeight}p`,
+        format: 'mp4',
     })
-    if (!fs.existsSync(out)) throw new Error('Falha ao baixar vídeo.')
-    return out
+
+    await writeStream(stream, outPath)
+    return outPath
 }
 
-async function downloadGeneric(url) {
-    const out = path.join(tmpDir, `dl_${Date.now()}.mp4`)
-    await ytDlpExec(url, {
-        output: out,
-        format: 'best[ext=mp4]/best',
-        noPlaylist: true,
-        noWarnings: true,
-        quiet: true,
-    })
-    if (!fs.existsSync(out)) throw new Error('Falha ao baixar.')
-    return out
+function extractId(url) {
+    if (!url.includes('http')) return url
+    const match = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
+    if (match) return match[1]
+    throw new Error('Link do YouTube inválido.')
+}
+
+async function writeStream(stream, outPath) {
+    const { Readable } = require('stream')
+    const chunks = []
+    for await (const chunk of stream) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+    }
+    const buffer = Buffer.concat(chunks)
+    fs.writeFileSync(outPath, buffer)
+    if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+        throw new Error('Falha ao salvar o arquivo de mídia.')
+    }
 }
 
 function formatDuration(seconds) {
@@ -73,11 +92,8 @@ function formatDuration(seconds) {
     return `${m}:${String(s).padStart(2, '0')}`
 }
 
-function formatViews(n) {
-    if (!n) return '0'
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-    return String(n)
+function formatViews(text) {
+    return text || '0'
 }
 
-module.exports = { searchYouTube, downloadAudio, downloadVideo, downloadGeneric, formatDuration, formatViews }
+module.exports = { searchYouTube, downloadAudio, downloadVideo, formatDuration, formatViews }
