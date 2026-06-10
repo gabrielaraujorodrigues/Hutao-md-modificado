@@ -1,116 +1,170 @@
 const config = require('../../config')
 const os = require('os')
 const fetch = require('node-fetch')
+const fs = require('fs')
+const path = require('path')
+
+function getTime() {
+    const now = new Date()
+    const h = String(now.getHours()).padStart(2, '0')
+    const m = String(now.getMinutes()).padStart(2, '0')
+    return `${h}:${m}`
+}
+
+function getGreeting() {
+    const h = new Date().getHours()
+    if (h >= 5 && h < 12) return 'Bom dia ☀️'
+    if (h >= 12 && h < 18) return 'Boa tarde 🌤'
+    return 'Boa noite 🌙'
+}
 
 async function ping(ctx) {
     const start = Date.now()
-    const sent = await ctx.reply('🏓 *Pong!*')
+    await ctx.reply('🏓 *Pong!*')
     const latencia = Date.now() - start
     await ctx.reply(`⚡ *Latência:* ${latencia}ms`)
     await ctx.react('✅')
 }
 
 async function menu(ctx) {
-    const { reply, react } = ctx
+    const { sock, from, msg, react, sender } = ctx
     await react('📋')
 
+    const senderNum = sender.replace(/[^0-9]/g, '')
+    const hora = getTime()
+    const saudacao = getGreeting()
+
     const texto =
-        `╭──────────────────╮\n` +
-        `│  🌸 *${config.botName}*\n` +
-        `│  Prefixo: *${config.prefix}*\n` +
-        `╰──────────────────╯\n\n` +
+`┏═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┓
+┣⋆⃟ۣۜ᭪➣ 𖡦 𝐌𝐄𝐍𝐔 𝐆𝐄𝐑𝐀𝐋 【📋】
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
+┃╭━━─ ≪ •❈• ≫ ─━━╮
+┃╎ ✫✫✫✫✫
+┃╎ *${saudacao} @${senderNum}!*
+┃╎ ✯ *Bot*: ${config.botName}
+┃╎ ✯ *Prefixo*: ${config.prefix}
+┃╎ ✯ *Hora*: ${hora}
+┃╎ ✫✫✫✫✫
+┃╰━━─ ≪ •❈• ≫ ─━━╯
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 🎵 *MÚSICAS* ─────╮\n` +
-        `│ ${config.prefix}play *[nome/link]*\n` +
-        `│ ${config.prefix}ytmp3 *[nome/link]*\n` +
-        `│ ${config.prefix}ytmp4 *[nome/link]*\n` +
-        `│ ${config.prefix}video *[nome/link]*\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 🎵 MÚSICAS |✭˚•═┓
+┃╎ ${config.prefix}play *[nome ou link]*
+┃╎ ${config.prefix}ytmp3 *[nome ou link]*
+┃╎ ${config.prefix}ytmp4 *[nome ou link]*
+┃╎ ${config.prefix}video *[nome ou link]*
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 📥 *DOWNLOADS* ───╮\n` +
-        `│ ${config.prefix}tiktok *[link]*\n` +
-        `│ ${config.prefix}instagram *[link]*\n` +
-        `│ ${config.prefix}twitter *[link]*\n` +
-        `│ ${config.prefix}threads *[link]*\n` +
-        `│ ${config.prefix}pinterest *[link]*\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 📥 DOWNLOADS |✭˚•═┓
+┃╎ ${config.prefix}tiktok *[link]*
+┃╎ ${config.prefix}instagram *[link]*
+┃╎ ${config.prefix}twitter *[link]*
+┃╎ ${config.prefix}threads *[link]*
+┃╎ ${config.prefix}pinterest *[link]*
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 🎨 *FIGURINHAS* ──╮\n` +
-        `│ ${config.prefix}sticker\n` +
-        `│ ${config.prefix}figurinha\n` +
-        `│ ${config.prefix}s\n` +
-        `│ ${config.prefix}stealsticker\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 🎨 FIGURINHAS |✭˚•═┓
+┃╎ ${config.prefix}sticker
+┃╎ ${config.prefix}figurinha
+┃╎ ${config.prefix}s
+┃╎ ${config.prefix}stealsticker
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 🤖 *IA & BUSCA* ──╮\n` +
-        `│ ${config.prefix}ia *[pergunta]*\n` +
-        `│ ${config.prefix}gpt *[pergunta]*\n` +
-        `│ ${config.prefix}gemini *[pergunta]*\n` +
-        `│ ${config.prefix}traduzir *[idioma] [texto]*\n` +
-        `│ ${config.prefix}calc *[expressão]*\n` +
-        `│ ${config.prefix}clima *[cidade]*\n` +
-        `│ ${config.prefix}noticias\n` +
-        `│ ${config.prefix}anime *[nome]*\n` +
-        `│ ${config.prefix}letra *[música]*\n` +
-        `│ ${config.prefix}cep *[número]*\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 🤖 IA & BUSCA |✭˚•═┓
+┃╎ ${config.prefix}ia *[pergunta]*
+┃╎ ${config.prefix}gpt *[pergunta]*
+┃╎ ${config.prefix}gemini *[pergunta]*
+┃╎ ${config.prefix}traduzir *[idioma] [texto]*
+┃╎ ${config.prefix}calc *[expressão]*
+┃╎ ${config.prefix}clima *[cidade]*
+┃╎ ${config.prefix}noticias
+┃╎ ${config.prefix}anime *[nome]*
+┃╎ ${config.prefix}letra *[música - artista]*
+┃╎ ${config.prefix}cep *[número]*
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 😂 *DIVERSÃO* ────╮\n` +
-        `│ ${config.prefix}cantada\n` +
-        `│ ${config.prefix}curiosidade\n` +
-        `│ ${config.prefix}conselho\n` +
-        `│ ${config.prefix}piada\n` +
-        `│ ${config.prefix}vdd\n` +
-        `│ ${config.prefix}pergunta\n` +
-        `│ ${config.prefix}ship *[Nome x Nome]*\n` +
-        `│ ${config.prefix}sorte\n` +
-        `│ ${config.prefix}dado\n` +
-        `│ ${config.prefix}coinflip\n` +
-        `│ ${config.prefix}escolher *[op1 | op2]*\n` +
-        `│ ${config.prefix}simsim *[pergunta]*\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 😂 DIVERSÃO |✭˚•═┓
+┃╎ ${config.prefix}cantada
+┃╎ ${config.prefix}curiosidade
+┃╎ ${config.prefix}conselho
+┃╎ ${config.prefix}piada
+┃╎ ${config.prefix}vdd
+┃╎ ${config.prefix}pergunta
+┃╎ ${config.prefix}ship *[Nome x Nome]*
+┃╎ ${config.prefix}sorte
+┃╎ ${config.prefix}dado
+┃╎ ${config.prefix}coinflip
+┃╎ ${config.prefix}escolher *[op1 | op2]*
+┃╎ ${config.prefix}simsim *[pergunta]*
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 👥 *GRUPOS* ──────╮\n` +
-        `│ ${config.prefix}ban *[@membro]*\n` +
-        `│ ${config.prefix}add *[número]*\n` +
-        `│ ${config.prefix}promote *[@membro]*\n` +
-        `│ ${config.prefix}demote *[@membro]*\n` +
-        `│ ${config.prefix}everyone *[msg]*\n` +
-        `│ ${config.prefix}hidetag *[msg]*\n` +
-        `│ ${config.prefix}link\n` +
-        `│ ${config.prefix}revoke\n` +
-        `│ ${config.prefix}ginfo\n` +
-        `│ ${config.prefix}fechar\n` +
-        `│ ${config.prefix}abrir\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 👥 GRUPOS |✭˚•═┓
+┃╎ ${config.prefix}ban *[@membro]*
+┃╎ ${config.prefix}add *[número]*
+┃╎ ${config.prefix}promote *[@membro]*
+┃╎ ${config.prefix}demote *[@membro]*
+┃╎ ${config.prefix}everyone *[msg]*
+┃╎ ${config.prefix}hidetag *[msg]*
+┃╎ ${config.prefix}link
+┃╎ ${config.prefix}revoke
+┃╎ ${config.prefix}ginfo
+┃╎ ${config.prefix}fechar / ${config.prefix}abrir
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── 🎉 *BOAS-VINDAS* ─╮\n` +
-        `│ ${config.prefix}bemvindo\n` +
-        `│ ${config.prefix}bemvindo on/off\n` +
-        `│ ${config.prefix}bemvindo msg [texto]\n` +
-        `│ ${config.prefix}saida\n` +
-        `│ ${config.prefix}saida on/off\n` +
-        `│ ${config.prefix}saida msg [texto]\n` +
-        `╰──────────────────────╯\n\n` +
+┏═•✭･ﾟ✧*･ﾟ| 🎉 BOAS-VINDAS |✭˚•═┓
+┃╎ ${config.prefix}bemvindo on/off
+┃╎ ${config.prefix}bemvindo msg [texto]
+┃╎ ${config.prefix}saida on/off
+┃╎ ${config.prefix}saida msg [texto]
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-        `╭─── ℹ️ *BOT* ──────────╮\n` +
-        `│ ${config.prefix}ping\n` +
-        `│ ${config.prefix}dono\n` +
-        `│ ${config.prefix}uptime\n` +
-        `╰──────────────────────╯\n\n` +
-        `_🌸 ${config.botName} — Todos os comandos gratuitos_`
+┏═•✭･ﾟ✧*･ﾟ| ℹ️ BOT |✭˚•═┓
+┃╎ ${config.prefix}ping
+┃╎ ${config.prefix}dono
+┃╎ ${config.prefix}uptime
+┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛
 
-    await reply(texto)
+_✰ ${config.botName} — Todos os comandos são gratuitos ✰_`
+
+    // Tenta enviar com imagem; se falhar, envia só o texto
+    try {
+        const imgPath = path.join(__dirname, '../../src/assets/menu.jpg')
+        if (fs.existsSync(imgPath)) {
+            await sock.sendMessage(from, {
+                image: fs.readFileSync(imgPath),
+                caption: texto,
+                mentions: [sender],
+            }, { quoted: msg })
+        } else {
+            // Fallback: imagem via URL do repositório
+            await sock.sendMessage(from, {
+                image: { url: config.menuImage },
+                caption: texto,
+                mentions: [sender],
+            }, { quoted: msg })
+        }
+    } catch {
+        await sock.sendMessage(from, { text: texto, mentions: [sender] }, { quoted: msg })
+    }
+
+    await ctx.react('✅')
 }
 
 async function dono(ctx) {
     const { reply, react } = ctx
     await react('👑')
     await reply(
-        `👑 *Informações do Dono*\n\n` +
-        `📛 *Nome:* ${config.ownerName}\n` +
-        `📱 *Contato:* wa.me/${config.ownerNumber}\n` +
-        `🌸 *Bot:* ${config.botName}\n\n` +
+        `┏═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┓\n` +
+        `┣⋆⃟ۣۜ᭪➣ 𖡦 𝐈𝐍𝐅𝐎 𝐃𝐎𝐍𝐎 【👑】\n` +
+        `┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛\n` +
+        `┃╭━━─ ≪ •❈• ≫ ─━━╮\n` +
+        `┃╎ ✫✫✫✫✫\n` +
+        `┃╎ ✯ *Nome*: ${config.ownerName}\n` +
+        `┃╎ ✯ *Contato*: wa.me/${config.ownerNumber}\n` +
+        `┃╎ ✯ *Bot*: ${config.botName}\n` +
+        `┃╎ ✫✫✫✫✫\n` +
+        `┃╰━━─ ≪ •❈• ≫ ─━━╯\n` +
+        `┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛\n\n` +
         `_Para suporte, fale com o dono!_`
     )
 }
@@ -127,11 +181,14 @@ async function uptime(ctx) {
     const mbTotal = (mem.heapTotal / 1024 / 1024).toFixed(1)
 
     await reply(
-        `⏱ *Status do Bot*\n\n` +
-        `🕐 *Online há:* ${horas}h ${minutos}m ${segs}s\n` +
-        `💾 *Memória:* ${mbUsado}MB / ${mbTotal}MB\n` +
-        `🖥 *Plataforma:* ${os.platform()}\n` +
-        `⚡ *Node.js:* ${process.version}`
+        `┏═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┓\n` +
+        `┣⋆⃟ۣۜ᭪➣ 𖡦 𝐒𝐓𝐀𝐓𝐔𝐒 𝐃𝐎 𝐁𝐎𝐓 【⏱】\n` +
+        `┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛\n` +
+        `┃╎ 🕐 *Online há:* ${horas}h ${minutos}m ${segs}s\n` +
+        `┃╎ 💾 *Memória:* ${mbUsado}MB / ${mbTotal}MB\n` +
+        `┃╎ 🖥 *Plataforma:* ${os.platform()}\n` +
+        `┃╎ ⚡ *Node.js:* ${process.version}\n` +
+        `┗═•✭･ﾟ✧*･ﾟ| ⊱✿⊰ |*✭˚･ﾟ✧･ﾟ•═┛`
     )
 }
 
@@ -193,8 +250,7 @@ async function cep(ctx) {
         const data = await res.json()
         if (data.erro) return reply('❌ CEP não encontrado.')
         await reply(
-            `📍 *Informações do CEP*\n\n` +
-            `📮 *CEP:* ${data.cep}\n` +
+            `📍 *CEP ${data.cep}*\n\n` +
             `🏘 *Logradouro:* ${data.logradouro || '-'}\n` +
             `🏙 *Bairro:* ${data.bairro || '-'}\n` +
             `🌆 *Cidade:* ${data.localidade}\n` +
