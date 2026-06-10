@@ -6,6 +6,8 @@ const path = require('path')
 const commands = {}
 const cooldowns = new Map()
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
 // Carrega todos os comandos da pasta src/commands
 const commandsDir = path.join(__dirname, 'src/commands')
 fs.readdirSync(commandsDir).forEach((file) => {
@@ -40,7 +42,6 @@ function unwrapMessage(msg) {
 
 function extractBody(message) {
     if (!message) return ''
-    // Percorre as chaves mais comuns para encontrar o texto
     return (
         message.conversation ||
         message.extendedTextMessage?.text ||
@@ -56,15 +57,22 @@ function extractBody(message) {
     )
 }
 
+// Simula digitação para parecer mais humano e evitar ban
+async function simulateTyping(sock, from, ms = null) {
+    try {
+        await sock.sendPresenceUpdate('composing', from)
+        await sleep(ms || (800 + Math.random() * 1200))
+        await sock.sendPresenceUpdate('paused', from)
+    } catch {}
+}
+
 async function handleMessage(sock, rawMsg) {
-    // Sem conteúdo ou mensagem do próprio bot → ignora
     if (!rawMsg?.message) return
     if (rawMsg.key.fromMe) return
 
     const remoteJid = rawMsg.key.remoteJid
     if (!remoteJid || remoteJid === 'status@broadcast') return
 
-    // Desempacota ephemeral / viewOnce
     const msg = unwrapMessage(rawMsg)
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
@@ -72,10 +80,7 @@ async function handleMessage(sock, rawMsg) {
     const senderNum = sender.replace(/[^0-9]/g, '')
     const isOwner = senderNum === config.ownerNumber.replace(/[^0-9]/g, '')
 
-    // Extrai o corpo e aplica trim para remover espaços/caracteres invisíveis
     const body = extractBody(msg.message).trim()
-
-    // Sem prefixo → não é um comando
     if (!body.startsWith(config.prefix)) return
 
     const args = body.slice(config.prefix.length).trim().split(/\s+/)
@@ -90,6 +95,7 @@ async function handleMessage(sock, rawMsg) {
     if (cooldowns.has(cdKey)) {
         const remaining = cooldowns.get(cdKey) - Date.now()
         if (remaining > 0) {
+            await simulateTyping(sock, from, 500)
             await sock.sendMessage(from, {
                 text: `⏳ Aguarde *${(remaining / 1000).toFixed(1)}s* antes de usar este comando novamente.`
             }, { quoted: msg })
@@ -117,14 +123,18 @@ async function handleMessage(sock, rawMsg) {
         text,
         body,
         type: getContentType(msg.message),
-        reply: (content) => {
+        reply: async (content) => {
+            await simulateTyping(sock, from)
             if (typeof content === 'string') {
                 return sock.sendMessage(from, { text: content }, { quoted: msg })
             }
             return sock.sendMessage(from, content, { quoted: msg })
         },
         react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } }).catch(() => {}),
-        sendText: (t) => sock.sendMessage(from, { text: t }),
+        sendText: async (t) => {
+            await simulateTyping(sock, from)
+            return sock.sendMessage(from, { text: t })
+        },
         downloadMsg: async () => {
             const type = getContentType(msg.message)
             const msgData = msg.message[type]
@@ -142,6 +152,7 @@ async function handleMessage(sock, rawMsg) {
         console.error(`[ERRO] !${command}:`, err.message)
         console.error(err.stack)
         try {
+            await simulateTyping(sock, from, 500)
             await ctx.reply(`❌ Erro ao executar *!${command}*:\n${err.message}`)
             await ctx.react('❌')
         } catch {}
