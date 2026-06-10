@@ -1,6 +1,6 @@
 module.exports = {
     prefix: '!',
-    ownerNumber: '5500000000000',
+    ownerNumber: '558694029686',
     botName: 'Jordan Bot',
     ownerName: 'Dono',
     footer: '🌸 Jordan Bot',
