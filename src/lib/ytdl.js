@@ -1,41 +1,33 @@
 /**
  * ytdl.js — download de áudio/vídeo do YouTube sem yt-dlp nem ffmpeg
  *
- * Estratégia de download:
- *  1. YouTube Innertube API (cliente ANDROID) → URLs diretas sem cipher
- *  2. cobalt.tools API pública
- *  3. Invidious (open-source YouTube frontend)
- *  4. play-dl stream (último recurso)
+ * Métodos em cascata:
+ *  1. @distube/ytdl-core  — pacote Node.js que decifra o YouTube internamente
+ *  2. play-dl stream      — fallback leve
  *
- * Estratégia de busca:
- *  1. play-dl search
- *  2. Invidious search API
+ * Busca:
+ *  1. @distube/ytdl-core search (via getInfo por URL)
+ *  2. play-dl search
+ *  3. Invidious search API (vários servidores)
  */
 
+const ytdl   = require('@distube/ytdl-core')
 const playdl = require('play-dl')
-const fs = require('fs')
-const path = require('path')
-const os = require('os')
+const fs     = require('fs')
+const path   = require('path')
+const os     = require('os')
 
-// Suporte a fetch em Node < 18
 const _fetch = (() => {
     if (typeof fetch === 'function') return fetch
     try { return require('node-fetch') } catch { return null }
 })()
 
-// ── Instâncias públicas do Invidious ──────────────────────────────────────────
 const INVIDIOUS = [
-    'https://inv.nadeko.net',
+    'https://iv.datura.network',
     'https://invidious.privacyredirect.com',
     'https://yewtu.be',
+    'https://inv.tux.pizza',
     'https://invidious.nerdvpn.de',
-    'https://vid.puffyan.us',
-]
-
-// Instâncias públicas do cobalt.tools (fallback)
-const COBALT_INSTANCES = [
-    'https://api.cobalt.tools/',
-    'https://cobalt.api.timelessnesses.me/',
 ]
 
 function safeTimeout(ms) {
@@ -47,16 +39,15 @@ function extractVideoId(url) {
     try {
         const u = new URL(url)
         if (u.searchParams.get('v')) return u.searchParams.get('v')
-        // youtu.be/VIDEOID
-        const m = u.pathname.match(/\/([A-Za-z0-9_-]{11})/)
+        const m = u.pathname.match(/\/([A-Za-z0-9_-]{11})$/)
         return m ? m[1] : null
     } catch { return null }
 }
 
-// ── BUSCA ──────────────────────────────────────────────────────────────────────
+// ── BUSCA ─────────────────────────────────────────────────────────────────────
 
 async function searchYouTube(query) {
-    // Método 1: play-dl (busca direta no YouTube)
+    // Método 1: play-dl (mais rápido)
     try {
         const results = await playdl.search(query, { source: { youtube: 'video' }, limit: 1 })
         const v = results?.[0]
@@ -97,215 +88,61 @@ async function searchYouTube(query) {
         }
     }
 
-    throw new Error('Nenhum resultado encontrado no YouTube.')
+    throw new Error('Nenhum resultado encontrado. Tente um termo diferente.')
 }
 
-// ── INNERTUBE API (cliente Android) ───────────────────────────────────────────
-// O cliente Android retorna URLs de stream SEM cipher — download direto.
-// Técnica usada internamente pelo yt-dlp e outros.
-
-async function innertubeStreams(videoId) {
-    if (!_fetch) throw new Error('fetch indisponível')
-
-    const body = {
-        videoId,
-        context: {
-            client: {
-                clientName: 'ANDROID',
-                clientVersion: '19.09.37',
-                androidSdkVersion: 30,
-                userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-                hl: 'pt',
-                gl: 'BR',
-            },
-        },
-    }
-
-    const res = await _fetch(
-        'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-                'X-YouTube-Client-Name': '3',
-                'X-YouTube-Client-Version': '19.09.37',
-                'Origin': 'https://www.youtube.com',
-            },
-            body: JSON.stringify(body),
-            signal: safeTimeout(15000),
-        }
-    )
-
-    if (!res.ok) throw new Error(`Innertube HTTP ${res.status}`)
-    const data = await res.json()
-
-    if (data.playabilityStatus?.status === 'LOGIN_REQUIRED') throw new Error('Vídeo requer login.')
-    if (data.playabilityStatus?.status !== 'OK') throw new Error(`YouTube: ${data.playabilityStatus?.reason || 'não disponível'}`)
-
-    return data.streamingData
-}
-
-async function downloadFromInnertube(url) {
-    const videoId = extractVideoId(url)
-    if (!videoId) throw new Error('ID de vídeo inválido')
-
-    const streamData = await innertubeStreams(videoId)
-
-    // Prefere adaptiveFormats (áudio separado), depois formats misturados
-    const allFormats = [
-        ...(streamData.adaptiveFormats || []),
-        ...(streamData.formats || []),
-    ]
-
-    // Filtra apenas áudio
-    const audioFormats = allFormats
-        .filter(f => f.mimeType?.startsWith('audio/') && f.url)
-        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))
-
-    if (!audioFormats.length) throw new Error('Nenhum formato de áudio disponível.')
-
-    // Usa o melhor formato de áudio disponível
-    const best = audioFormats[0]
-    const ext = best.mimeType?.includes('mp4') ? 'm4a' : 'webm'
-    const tmpPath = path.join(os.tmpdir(), `innertube_${Date.now()}.${ext}`)
-
-    const dl = await _fetch(best.url, {
-        headers: {
-            'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-            'Range': 'bytes=0-',
-        },
-        signal: safeTimeout(120000),
-    })
-
-    if (!dl.ok) throw new Error(`Innertube stream: HTTP ${dl.status}`)
-
-    const buf = Buffer.from(await dl.arrayBuffer())
-    fs.writeFileSync(tmpPath, buf)
-
-    if (!fs.existsSync(tmpPath) || fs.statSync(tmpPath).size < 1000) {
-        try { fs.unlinkSync(tmpPath) } catch {}
-        throw new Error('Arquivo de áudio vazio')
-    }
-
-    const mimeType = ext === 'm4a' ? 'audio/mp4' : 'audio/ogg; codecs=opus'
-    return { path: tmpPath, mimetype: mimeType }
-}
-
-// ── COBALT.TOOLS API ──────────────────────────────────────────────────────────
-
-async function cobaltDownload(ytUrl, mode = 'audio') {
-    if (!_fetch) throw new Error('fetch indisponível')
-
-    for (const instance of COBALT_INSTANCES) {
-        try {
-            const res = await _fetch(instance, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'User-Agent': 'Mozilla/5.0',
-                },
-                body: JSON.stringify({
-                    url: ytUrl,
-                    downloadMode: mode,
-                    audioFormat: 'best',
-                    videoQuality: '720',
-                    filenameStyle: 'basic',
-                }),
-                signal: safeTimeout(20000),
-            })
-
-            if (!res.ok) continue
-            const data = await res.json()
-            if (!data.url) continue
-
-            const ext = mode === 'audio' ? 'mp3' : 'mp4'
-            const tmpPath = path.join(os.tmpdir(), `cobalt_${Date.now()}.${ext}`)
-
-            const dl = await _fetch(data.url, {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                signal: safeTimeout(120000),
-            })
-            if (!dl.ok) continue
-
-            const buf = Buffer.from(await dl.arrayBuffer())
-            fs.writeFileSync(tmpPath, buf)
-
-            if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
-                return { path: tmpPath, mimetype: mode === 'audio' ? 'audio/mpeg' : 'video/mp4' }
-            }
-        } catch {}
-    }
-    throw new Error('Cobalt: todas as instâncias falharam')
-}
-
-// ── INVIDIOUS STREAM DIRETO ───────────────────────────────────────────────────
-
-async function invidiosDownloadAudio(videoId) {
-    if (!_fetch) throw new Error('fetch indisponível')
-
-    for (const base of INVIDIOUS) {
-        try {
-            const res = await _fetch(
-                `${base}/api/v1/videos/${videoId}?fields=adaptiveFormats`,
-                { signal: safeTimeout(10000) }
-            )
-            if (!res.ok) continue
-            const data = await res.json()
-
-            const audioFormats = (data.adaptiveFormats || [])
-                .filter(f => f.type?.startsWith('audio/') && f.url)
-                .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))
-
-            if (!audioFormats.length) continue
-
-            const dl = await _fetch(audioFormats[0].url, { signal: safeTimeout(120000) })
-            if (!dl.ok) continue
-
-            const tmpPath = path.join(os.tmpdir(), `inv_${Date.now()}.webm`)
-            fs.writeFileSync(tmpPath, Buffer.from(await dl.arrayBuffer()))
-
-            if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
-                return { path: tmpPath, mimetype: 'audio/ogg; codecs=opus' }
-            }
-        } catch {}
-    }
-    throw new Error('Invidious: todas as instâncias falharam')
-}
-
-// ── DOWNLOAD DE ÁUDIO (com fallback em cascata) ───────────────────────────────
+// ── DOWNLOAD DE ÁUDIO ─────────────────────────────────────────────────────────
 
 async function downloadAudio(url) {
-    const videoId = extractVideoId(url)
+    const tmpBase = path.join(os.tmpdir(), `yt_audio_${Date.now()}`)
 
-    // 1️⃣ YouTube Innertube API direta (sem bloqueio, sem cipher)
+    // Método 1: @distube/ytdl-core
+    // Lida com cipher/deobfuscation internamente — o mais confiável em Node.js puro
     try {
-        return await downloadFromInnertube(url)
-    } catch (err) {
-        console.error('[Innertube] Falhou:', err.message?.slice(0, 120))
-    }
+        // Verifica se o vídeo é acessível
+        if (!ytdl.validateURL(url)) throw new Error('URL inválida')
 
-    // 2️⃣ cobalt.tools (API pública)
-    try {
-        return await cobaltDownload(url, 'audio')
-    } catch (err) {
-        console.error('[Cobalt] Falhou:', err.message?.slice(0, 120))
-    }
+        const info = await ytdl.getInfo(url, {
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept-Language': 'pt-BR,pt;q=0.9',
+                },
+            },
+        })
 
-    // 3️⃣ Invidious stream direto
-    if (videoId) {
-        try {
-            return await invidiosDownloadAudio(videoId)
-        } catch (err) {
-            console.error('[Invidious] Falhou:', err.message?.slice(0, 120))
+        // Ordena por bitrate — pega o melhor áudio
+        const audioFormats = ytdl.filterFormats(info.formats, 'audioonly')
+            .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))
+
+        if (!audioFormats.length) throw new Error('Nenhum formato de áudio disponível')
+
+        const fmt = audioFormats[0]
+        const ext = fmt.container || 'webm'
+        const tmpPath = `${tmpBase}.${ext}`
+        const mimeType = fmt.mimeType?.split(';')[0] || 'audio/webm'
+
+        await new Promise((resolve, reject) => {
+            const stream = ytdl.downloadFromInfo(info, { format: fmt })
+            const out = fs.createWriteStream(tmpPath)
+            stream.pipe(out)
+            stream.on('error', reject)
+            out.on('finish', resolve)
+            out.on('error', reject)
+        })
+
+        if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
+            return { path: tmpPath, mimetype: mimeType }
         }
+        throw new Error('Arquivo muito pequeno')
+    } catch (err) {
+        console.error('[ytdl-core] Falhou:', err.message?.slice(0, 150))
     }
 
-    // 4️⃣ play-dl stream (último recurso)
+    // Método 2: play-dl stream
     try {
         const streamData = await playdl.stream(url, { quality: 1 })
-        const tmpPath = path.join(os.tmpdir(), `playdl_${Date.now()}.webm`)
+        const tmpPath = `${tmpBase}_pd.webm`
         await new Promise((resolve, reject) => {
             const out = fs.createWriteStream(tmpPath)
             streamData.stream.pipe(out)
@@ -319,50 +156,53 @@ async function downloadAudio(url) {
         console.error('[play-dl] Falhou:', err.message?.slice(0, 100))
     }
 
-    throw new Error('❌ Não foi possível baixar o áudio. O YouTube pode estar temporariamente bloqueando. Tente novamente em alguns instantes.')
+    throw new Error('❌ Não foi possível baixar o áudio. Verifique se o vídeo está disponível no Brasil e tente novamente.')
 }
 
 // ── DOWNLOAD DE VÍDEO ─────────────────────────────────────────────────────────
 
 async function downloadVideo(url) {
-    const videoId = extractVideoId(url)
+    const tmpBase = path.join(os.tmpdir(), `yt_video_${Date.now()}`)
 
-    // 1️⃣ Innertube (formatos misturados de vídeo+áudio)
-    if (videoId) {
-        try {
-            const streamData = await innertubeStreams(videoId)
-            const formats = (streamData.formats || [])
-                .filter(f => f.mimeType?.includes('video/mp4') && f.url)
-                .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))
-
-            if (formats.length) {
-                const best = formats[0]
-                const tmpPath = path.join(os.tmpdir(), `innertube_video_${Date.now()}.mp4`)
-                const dl = await _fetch(best.url, {
-                    headers: { 'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip' },
-                    signal: safeTimeout(180000),
-                })
-                if (dl.ok) {
-                    const buf = Buffer.from(await dl.arrayBuffer())
-                    fs.writeFileSync(tmpPath, buf)
-                    if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
-                        return { path: tmpPath, mimetype: 'video/mp4' }
-                    }
-                }
-            }
-        } catch (err) {
-            console.error('[Innertube Video] Falhou:', err.message?.slice(0, 120))
-        }
-    }
-
-    // 2️⃣ Cobalt
+    // @distube/ytdl-core — formato misto (vídeo+áudio no mesmo container)
     try {
-        return await cobaltDownload(url, 'auto')
+        if (!ytdl.validateURL(url)) throw new Error('URL inválida')
+
+        const info = await ytdl.getInfo(url, {
+            requestOptions: {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            },
+        })
+
+        // Formatos com vídeo + áudio juntos (mp4), ordenados por resolução
+        const mixedFormats = ytdl.filterFormats(info.formats, 'videoandaudio')
+            .filter(f => f.container === 'mp4')
+            .sort((a, b) => (b.height || 0) - (a.height || 0))
+
+        if (!mixedFormats.length) throw new Error('Nenhum formato mp4 disponível')
+
+        // Limita a 480p para não esourar os 60 MB
+        const fmt = mixedFormats.find(f => (f.height || 999) <= 480) || mixedFormats[mixedFormats.length - 1]
+        const tmpPath = `${tmpBase}.mp4`
+
+        await new Promise((resolve, reject) => {
+            const stream = ytdl.downloadFromInfo(info, { format: fmt })
+            const out = fs.createWriteStream(tmpPath)
+            stream.pipe(out)
+            stream.on('error', reject)
+            out.on('finish', resolve)
+            out.on('error', reject)
+        })
+
+        if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
+            return { path: tmpPath, mimetype: 'video/mp4' }
+        }
+        throw new Error('Arquivo vazio')
     } catch (err) {
-        console.error('[Cobalt Video] Falhou:', err.message?.slice(0, 120))
+        console.error('[ytdl-core video] Falhou:', err.message?.slice(0, 150))
     }
 
-    throw new Error('❌ Não foi possível baixar o vídeo.')
+    throw new Error('❌ Não foi possível baixar o vídeo. Tente novamente.')
 }
 
 // ── UTILITÁRIOS ───────────────────────────────────────────────────────────────
