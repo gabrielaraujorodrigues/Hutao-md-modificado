@@ -6,6 +6,7 @@ const {
     makeCacheableSignalKeyStore,
     Browsers,
     proto,
+    makeInMemoryStore,
 } = require('@whiskeysockets/baileys')
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
@@ -16,12 +17,11 @@ const { handleGroupUpdate } = require('./src/commands/welcome')
 const config = require('./config')
 
 process.on('uncaughtException', (err) => {
-    console.error(chalk.red('\n[FATAL] Exceção não tratada:'), err.message)
+    console.error(chalk.red('\n[FATAL]'), err.message)
     console.error(err.stack)
 })
 process.on('unhandledRejection', (reason) => {
-    const msg = reason instanceof Error ? reason.message : String(reason)
-    console.error(chalk.red('\n[FATAL] Promise rejeitada:'), msg)
+    console.error(chalk.red('\n[REJECTION]'), reason?.message || reason)
 })
 
 const SILENT = () => {}
@@ -30,6 +30,14 @@ const logger = {
     trace: SILENT, debug: SILENT, info: SILENT,
     warn: SILENT, error: SILENT, fatal: SILENT,
     child: () => logger,
+}
+
+// Store em memória para recuperar mensagens (necessário para retry/re-chave)
+let store = null
+try {
+    store = makeInMemoryStore({ logger })
+} catch {
+    store = null
 }
 
 if (!fs.existsSync('./session')) fs.mkdirSync('./session')
@@ -47,7 +55,7 @@ async function startBot() {
         const latest = await fetchLatestBaileysVersion()
         version = latest.version
     } catch {
-        console.log(chalk.yellow(`  [AVISO] Usando versão padrão do Baileys: ${version.join('.')}`))
+        console.log(chalk.yellow(`  [AVISO] Usando versão padrão: ${version.join('.')}`))
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./session/auth')
@@ -68,17 +76,27 @@ async function startBot() {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, logger),
         },
-        browser: Browsers.ubuntu('Chrome'),
+        // baileys() é mais compatível e menos bloqueado pelo WhatsApp
+        browser: Browsers.baileys('Chrome'),
         syncFullHistory: false,
-        generateHighQualityLinkPreview: true,
-        getMessage: async () => proto.Message.fromObject({}),
+        generateHighQualityLinkPreview: false,
+        getMessage: async (key) => {
+            if (store) {
+                const msg = await store.loadMessage(key.remoteJid, key.id)
+                return msg?.message || undefined
+            }
+            return proto.Message.fromObject({})
+        },
     })
+
+    // Vincula o store ao socket para armazenar mensagens
+    if (store) store.bind(sock.ev)
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
 
         if (qr) {
-            console.log(chalk.yellow('\n  Escaneie o QR Code abaixo com o WhatsApp:\n'))
+            console.log(chalk.yellow('\n  Escaneie o QR Code abaixo:\n'))
             qrcode.generate(qr, { small: true })
         }
 
@@ -91,7 +109,7 @@ async function startBot() {
             const badSession = statusCode === DisconnectReason.badSession
 
             if (loggedOut || badSession) {
-                console.log(chalk.red(`\n  [SESSÃO] ${loggedOut ? 'Logout detectado' : 'Sessão inválida'}. Limpando e aguardando novo QR...\n`))
+                console.log(chalk.red(`\n  [SESSÃO] ${loggedOut ? 'Logout' : 'Sessão inválida'}. Limpando e reiniciando...\n`))
                 clearSession()
                 retryCount = 0
                 setTimeout(startBot, 3000)
@@ -103,8 +121,7 @@ async function startBot() {
             }
         } else if (connection === 'open') {
             retryCount = 0
-            console.log(chalk.green('\n  ✅ Bot conectado com sucesso!\n'))
-            console.log(chalk.gray('  Aguardando mensagens...\n'))
+            console.log(chalk.green('\n  ✅ Bot conectado! Aguardando mensagens...\n'))
         }
     })
 
@@ -122,7 +139,7 @@ async function startBot() {
 
     sock.ev.on('group-participants.update', async (update) => {
         handleGroupUpdate(sock, update).catch((err) => {
-            console.error(chalk.red('[GRUPO]'), err.message)
+            console.error(chalk.red('[GRUPO ERRO]'), err.message)
         })
     })
 }
@@ -130,14 +147,6 @@ async function startBot() {
 console.log(chalk.cyan('[BOT] Iniciando...'))
 
 startBot().catch((err) => {
-    console.error(chalk.red('\n[ERRO FATAL ao iniciar:]'), err.message)
-    console.error(err.stack)
-    console.log(chalk.yellow('[BOT] Tentando reiniciar em 10 segundos...'))
-    setTimeout(() => {
-        retryCount = 0
-        startBot().catch((err2) => {
-            console.error(chalk.red('[ERRO FATAL (2ª tentativa):]'), err2.message)
-            process.exit(1)
-        })
-    }, 10000)
+    console.error(chalk.red('[ERRO FATAL]'), err.message)
+    setTimeout(() => { retryCount = 0; startBot().catch(() => process.exit(1)) }, 10000)
 })
