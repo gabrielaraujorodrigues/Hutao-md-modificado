@@ -27,6 +27,10 @@ const _fetch = (() => {
 // Caminho do binário yt-dlp dentro do projeto (não precisa de root)
 const YTDLP_PATH = path.resolve(__dirname, '../../bin/yt-dlp')
 
+// Arquivo de cookies do YouTube (exportar do navegador com extensão "Get cookies.txt LOCALLY")
+// Coloque o arquivo como cookies.txt na pasta raiz do bot (mesma pasta do index.js)
+const COOKIES_PATH = path.resolve(__dirname, '../../cookies.txt')
+
 const INVIDIOUS = [
     'https://iv.datura.network',
     'https://invidious.privacyredirect.com',
@@ -88,9 +92,22 @@ async function ensureYtdlp() {
     return false
 }
 
+// Retorna args extras de cookies se o arquivo existir
+function cookiesArgs() {
+    return fs.existsSync(COOKIES_PATH) ? ['--cookies', COOKIES_PATH] : []
+}
+
 // Faz o download usando yt-dlp local (sem instalação global)
-function runYtdlp(args, timeoutMs = 120000) {
-    return execFileSync(YTDLP_PATH, args, { timeout: timeoutMs, encoding: 'utf8' })
+function runYtdlp(args, timeoutMs = 45000) {
+    return execFileSync(YTDLP_PATH, [...args, ...cookiesArgs()], { timeout: timeoutMs, encoding: 'utf8' })
+}
+
+// Wrapper de timeout para promises
+function withTimeout(promise, ms, label) {
+    return Promise.race([
+        promise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${label}: timeout ${ms / 1000}s`)), ms)),
+    ])
 }
 
 // ── BUSCA ─────────────────────────────────────────────────────────────────────
@@ -167,9 +184,10 @@ async function downloadAudio(url) {
     const tmpBase = path.join(os.tmpdir(), `yt_audio_${Date.now()}`)
 
     // Garante que yt-dlp está disponível (baixa automaticamente se não estiver)
-    const ytdlpOk = await ensureYtdlp()
+    const ytdlpOk = await withTimeout(ensureYtdlp(), 50000, 'ensureYtdlp')
+        .catch(() => false)
 
-    // Método 1: yt-dlp com cliente Android (burla bloqueio de datacenter)
+    // Método 1: yt-dlp — falha em 40 s se YouTube bloquear
     if (ytdlpOk) {
         try {
             const outTemplate = tmpBase + '.%(ext)s'
@@ -177,11 +195,13 @@ async function downloadAudio(url) {
                 url,
                 '-x', '--audio-format', 'mp3', '--audio-quality', '5',
                 '--no-playlist', '--quiet', '--no-warnings',
+                '--socket-timeout', '10',
+                '--retries', '1',
+                '--fragment-retries', '1',
                 '--extractor-args', 'youtube:player_client=android,ios',
                 '--output', outTemplate,
-            ], 120000)
+            ], 40000)                           // timeout duro: 40 s
 
-            // Procura o arquivo gerado
             const dir = os.tmpdir()
             const base = path.basename(tmpBase)
             const found = fs.readdirSync(dir).find(f => f.startsWith(base) && f.endsWith('.mp3'))
@@ -190,20 +210,17 @@ async function downloadAudio(url) {
                 if (fs.statSync(fp).size > 1000) return { path: fp, mimetype: 'audio/mpeg' }
             }
         } catch (err) {
-            console.error('[yt-dlp] Falhou:', err.message?.slice(0, 150))
+            console.error('[yt-dlp] Falhou:', err.message?.slice(0, 100))
         }
     }
 
-    // Método 2: @distube/ytdl-core
+    // Método 2: @distube/ytdl-core — timeout de 30 s
     try {
         if (ytdl.validateURL(url)) {
-            const info = await ytdl.getInfo(url, {
-                requestOptions: {
-                    headers: {
-                        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-                    },
-                },
-            })
+            const info = await withTimeout(
+                ytdl.getInfo(url, { requestOptions: { headers: { 'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip' } } }),
+                20000, 'ytdl-core getInfo'
+            )
             const audioFormats = ytdl.filterFormats(info.formats, 'audioonly')
                 .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))
 
@@ -211,33 +228,38 @@ async function downloadAudio(url) {
                 const fmt = audioFormats[0]
                 const ext = fmt.container || 'webm'
                 const tmpPath = `${tmpBase}.${ext}`
-                await new Promise((resolve, reject) => {
+                await withTimeout(new Promise((resolve, reject) => {
                     const stream = ytdl.downloadFromInfo(info, { format: fmt })
                     const out = fs.createWriteStream(tmpPath)
                     stream.pipe(out)
                     stream.on('error', reject)
                     out.on('finish', resolve)
                     out.on('error', reject)
-                })
+                }), 30000, 'ytdl-core download')
+
                 if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
                     return { path: tmpPath, mimetype: fmt.mimeType?.split(';')[0] || 'audio/webm' }
                 }
             }
         }
     } catch (err) {
-        console.error('[ytdl-core] Falhou:', err.message?.slice(0, 150))
+        console.error('[ytdl-core] Falhou:', err.message?.slice(0, 100))
     }
 
-    // Método 3: play-dl stream
+    // Método 3: play-dl — timeout de 20 s
     try {
-        const streamData = await playdl.stream(url, { quality: 1 })
+        const streamData = await withTimeout(
+            playdl.stream(url, { quality: 1 }),
+            15000, 'play-dl stream'
+        )
         const tmpPath = `${tmpBase}_pd.webm`
-        await new Promise((resolve, reject) => {
+        await withTimeout(new Promise((resolve, reject) => {
             const out = fs.createWriteStream(tmpPath)
             streamData.stream.pipe(out)
             out.on('finish', resolve)
             out.on('error', reject)
-        })
+        }), 20000, 'play-dl download')
+
         if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 1000) {
             return { path: tmpPath, mimetype: 'audio/ogg; codecs=opus' }
         }
@@ -245,7 +267,10 @@ async function downloadAudio(url) {
         console.error('[play-dl] Falhou:', err.message?.slice(0, 100))
     }
 
-    throw new Error('❌ Não foi possível baixar o áudio. Verifique os logs do bot para mais detalhes.')
+    const cookiesTip = fs.existsSync(COOKIES_PATH)
+        ? 'Seus cookies podem ter expirado. Exporte novamente.'
+        : 'Adicione o arquivo *cookies.txt* do YouTube na pasta do bot para resolver.'
+    throw new Error(`❌ YouTube bloqueou o download no seu servidor. ${cookiesTip}`)
 }
 
 // ── DOWNLOAD DE VÍDEO ─────────────────────────────────────────────────────────
